@@ -27,6 +27,15 @@ const DIST = path.join(__dirname, "../dist");
 const PUBLIC = app.isPackaged ? DIST : path.join(__dirname, "../public");
 const DEV_URL = process.env.VITE_DEV_SERVER_URL;
 
+// A development copy keeps its own folder, apart from the installed app's:
+// they share the app's name, and a developer signing in against a local
+// server must never replace the sign-in of the IlmWays installed on the same
+// Mac (it did once, and the installed app then signed itself out).
+// Before anything reads userData, the single-instance lock included.
+if (!app.isPackaged) {
+  app.setPath("userData", path.join(app.getPath("appData"), `${app.getName()}-dev`));
+}
+
 // Development only: lets tooling inspect the windows. Never in an installed build.
 if (!app.isPackaged && process.env.ILMWAYS_DEBUG_PORT) {
   app.commandLine.appendSwitch("remote-debugging-port", process.env.ILMWAYS_DEBUG_PORT);
@@ -134,9 +143,16 @@ async function onWebNavigated(url: string) {
     claimRetried = false;
     return;
   }
-  if (meaning === "claim-failed" && !claimRetried) {
-    claimRetried = true;
-    await claimWeb();
+  if (meaning === "claim-failed" || meaning === "lapsed") {
+    if (!claimRetried) {
+      claimRetried = true;
+      await claimWeb();
+      return;
+    }
+    // Twice in a row: the server is having trouble (a deploy, say). That is
+    // no reason to sign the PC out. The next check (within 30 s) tries again,
+    // and signs out only if the server refuses the PC's own token.
+    if (state.phase === "signed-in") setState({ ...state, webShown: false });
     return;
   }
   // Signing out inside the web app signs this PC out: the desktop is the identity.
@@ -145,7 +161,7 @@ async function onWebNavigated(url: string) {
 
 /** Sign the web view in with a fresh one-minute code and show it. */
 async function claimWeb() {
-  const stored = loadSession();
+  const stored = loadSession(SERVER);
   if (!stored || state.phase !== "signed-in") return;
   const reply = await server.webSession(stored.token);
   if (reply.kind === "offline") return setConnection("offline");
@@ -171,7 +187,7 @@ async function login(identifier: string, password: string): Promise<LoginResult>
   if (described.kind !== "ok") return { ok: false, message: "Signed in, but the school's details didn't load. Please try again." };
 
   const lastContact = new Date().toISOString();
-  saveSession({ token, session: described.data, lastContact });
+  saveSession({ server: SERVER, token, session: described.data, lastContact });
   setState({ phase: "signed-in", connection: "online", session: described.data, lastContact, webShown: false });
   void sync.run();
   await claimWeb();
@@ -179,7 +195,7 @@ async function login(identifier: string, password: string): Promise<LoginResult>
 }
 
 async function signOut(notice?: SignedOutNotice) {
-  const stored = loadSession();
+  const stored = loadSession(SERVER);
   clearSession();
   // Deleted with its key, unless changes made here haven't reached the server yet (D4).
   await sync.idle();
@@ -214,7 +230,7 @@ function check(): Promise<void> {
 }
 
 async function doCheck() {
-  const stored = loadSession();
+  const stored = loadSession(SERVER);
   if (!stored) {
     // Signed out: only reachability matters (for the sign-in screen's message).
     const probe = await server.session("");
@@ -263,7 +279,7 @@ const sync = createSync({
     return session && !session.onlineOnly ? currentOffline() : null;
   },
   server,
-  token: () => loadSession()?.token ?? null,
+  token: () => loadSession(SERVER)?.token ?? null,
   tables: () => signedInSession()?.syncTables ?? [],
   changed: () => sendSyncStatus(),
   unauthorized: () => void signOut("revoked"),
@@ -481,7 +497,7 @@ if (!app.requestSingleInstanceLock()) {
     createWindow();
 
     // Signed in before? Show it at once from what the PC remembers, then check.
-    const stored = loadSession();
+    const stored = loadSession(SERVER);
     if (stored && !contactExpired(stored.lastContact)) {
       setState({ phase: "signed-in", connection: "checking", session: stored.session, lastContact: stored.lastContact, webShown: false });
     }

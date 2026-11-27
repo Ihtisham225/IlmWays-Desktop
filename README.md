@@ -71,6 +71,8 @@ src/                 the window's own screens: title bar, sign-in, offline work,
 npm install
 npm run dev          # against https://www.ilmways.com
 npm run dev:local    # against an IlmWays server on http://localhost:3000
+                     # (a development run keeps its own data, in "ilmways-desktop-dev",
+                     # so it never touches the sign-in of an installed IlmWays)
 npm test             # runs under Electron's own Node, which the SQLite module needs
 npm run typecheck
 ```
