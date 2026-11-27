@@ -34,10 +34,13 @@ export function linkTarget(url: string, server: string): "window" | "browser" | 
 
 /**
  * The web view reached the sign-in page. Either a claim code failed (the
- * URL says so, and the app should get a fresh one) or the person signed out
- * inside the web app, which signs this PC out: the desktop is the identity.
+ * URL says so, and the app should get a fresh one); or the web session
+ * lapsed while the PC's own sign-in is fine (the web sends a visitor
+ * without a session cookie there with `?next=`), and the app signs the view
+ * in again; or the person signed out inside the web app (plain /login),
+ * which signs this PC out: the desktop is the identity.
  */
-export function signInPageMeaning(url: string, server: string): "not-sign-in" | "claim-failed" | "signed-out" {
+export function signInPageMeaning(url: string, server: string): "not-sign-in" | "claim-failed" | "lapsed" | "signed-out" {
   let target: URL;
   try {
     target = new URL(url);
@@ -45,7 +48,8 @@ export function signInPageMeaning(url: string, server: string): "not-sign-in" | 
     return "not-sign-in";
   }
   if (target.origin !== new URL(server).origin || target.pathname !== "/login") return "not-sign-in";
-  return target.searchParams.get("desktop") === "expired" ? "claim-failed" : "signed-out";
+  if (target.searchParams.get("desktop") === "expired") return "claim-failed";
+  return target.searchParams.has("next") ? "lapsed" : "signed-out";
 }
 
 /** The server the app talks to: production, unless a developer points it elsewhere. */

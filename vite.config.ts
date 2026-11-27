@@ -15,6 +15,9 @@ export default defineConfig({
     electron({
       main: {
         entry: "electron/main.ts",
+        // The encrypted SQLite module loads its own binary from beside it, so
+        // it stays in node_modules (unpacked from the asar) rather than bundled.
+        vite: { build: { rolldownOptions: { external: ["better-sqlite3-multiple-ciphers"] } } },
       },
       preload: {
         input: "electron/preload.ts",

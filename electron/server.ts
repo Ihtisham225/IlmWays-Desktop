@@ -1,6 +1,7 @@
 import { app } from "electron";
 import os from "node:os";
 import type { SessionInfo } from "../shared/types";
+import type { SyncServer } from "./sync";
 
 /**
  * The IlmWays server's desktop API (/api/desktop/v1 in the ilmways repo).
@@ -11,9 +12,11 @@ import type { SessionInfo } from "../shared/types";
 export type Reply<T> = { kind: "ok"; data: T } | { kind: "refused"; status: number; code: string; message: string } | { kind: "offline" };
 
 const TIMEOUT_MS = 10_000;
+/** A page of a large school's first download can take a while from Pakistan to the US. */
+const SYNC_TIMEOUT_MS = 60_000;
 
 export function createServer(base: string) {
-  async function call<T>(method: "GET" | "POST", path: string, options: { token?: string; body?: unknown } = {}): Promise<Reply<T>> {
+  async function call<T>(method: "GET" | "POST", path: string, options: { token?: string; body?: unknown; timeout?: number } = {}): Promise<Reply<T>> {
     let response: Response;
     try {
       response = await fetch(`${base}${path}`, {
@@ -24,7 +27,7 @@ export function createServer(base: string) {
           "user-agent": `IlmWays-Desktop/${app.getVersion()} (${process.platform})`,
         },
         body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
-        signal: AbortSignal.timeout(TIMEOUT_MS),
+        signal: AbortSignal.timeout(options.timeout ?? TIMEOUT_MS),
       });
     } catch {
       return { kind: "offline" };
@@ -56,6 +59,8 @@ export function createServer(base: string) {
     session: (token: string) => call<SessionInfo>("GET", "/api/desktop/v1/session", { token }),
     logout: (token: string) => call<{ signedOut: boolean }>("POST", "/api/desktop/v1/auth/logout", { token }),
     webSession: (token: string) => call<{ url: string }>("POST", "/api/desktop/v1/web-session", { token }),
+    pull: ((token, body) => call("POST", "/api/desktop/v1/sync/pull", { token, body, timeout: SYNC_TIMEOUT_MS })) as SyncServer["pull"],
+    push: ((token, ops) => call("POST", "/api/desktop/v1/sync/push", { token, body: { ops }, timeout: SYNC_TIMEOUT_MS })) as SyncServer["push"],
   };
 }
 

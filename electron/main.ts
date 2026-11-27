@@ -1,17 +1,40 @@
-import { app, BrowserWindow, ipcMain, Menu, powerMonitor, session as electronSession, shell, WebContentsView } from "electron";
+import { app, BrowserWindow, ipcMain, Menu, nativeTheme, powerMonitor, session as electronSession, shell, WebContentsView } from "electron";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import electronUpdater from "electron-updater";
-import { BAR_HEIGHT, type AppState, type Connection, type LoginResult, type SignedOutNotice, type UpdateState } from "../shared/types";
+import {
+  BAR_HEIGHT,
+  type AppState,
+  type Connection,
+  type LoginResult,
+  type NativeScreen,
+  type SaveResult,
+  type SessionInfo,
+  type SignedOutNotice,
+  type UpdateState,
+  type WebNav,
+} from "../shared/types";
 import { contactExpired, linkTarget, serverUrl, signInPageMeaning } from "../shared/rules";
+import { isDay, localDay, registerBlock } from "../shared/register";
 import { clearSession, loadSession, saveSession } from "./store";
 import { createServer } from "./server";
+import { closeOffline, currentOffline, offlineFor } from "./offline";
+import { createSync } from "./sync";
 
 const { autoUpdater } = electronUpdater;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DIST = path.join(__dirname, "../dist");
 const PUBLIC = app.isPackaged ? DIST : path.join(__dirname, "../public");
 const DEV_URL = process.env.VITE_DEV_SERVER_URL;
+
+// A development copy keeps its own folder, apart from the installed app's:
+// they share the app's name, and a developer signing in against a local
+// server must never replace the sign-in of the IlmWays installed on the same
+// Mac (it did once, and the installed app then signed itself out).
+// Before anything reads userData, the single-instance lock included.
+if (!app.isPackaged) {
+  app.setPath("userData", path.join(app.getPath("appData"), `${app.getName()}-dev`));
+}
 
 // Development only: lets tooling inspect the windows. Never in an installed build.
 if (!app.isPackaged && process.env.ILMWAYS_DEBUG_PORT) {
@@ -27,6 +50,8 @@ const CHECK_EVERY_MS = 30_000;
 let win: BrowserWindow | null = null;
 let web: WebContentsView | null = null;
 let state: AppState = { phase: "starting" };
+/** One of the window's own screens drawn over the web app, or null for the web app. */
+let screen: NativeScreen | null = null;
 
 /* ------------------------------------------------------------------ */
 /* State                                                               */
@@ -35,6 +60,9 @@ let state: AppState = { phase: "starting" };
 function setState(next: AppState) {
   const wasOffline = state.phase === "signed-in" && state.connection === "offline";
   state = next;
+  // The offline copy belongs to the signed-in school and user; none for the platform admin.
+  if (state.phase === "signed-in") offlineFor(state.session);
+  sendSyncStatus();
   win?.webContents.send("state", state);
   layoutWeb();
   // Back online with the web app open: pages that failed while offline load again.
@@ -55,7 +83,7 @@ function setConnection(connection: Connection) {
 
 function layoutWeb() {
   if (!win || !web) return;
-  const show = state.phase === "signed-in" && state.webShown && state.connection !== "offline";
+  const show = state.phase === "signed-in" && state.webShown && state.connection !== "offline" && screen === null;
   web.setVisible(show);
   const [width, height] = win.getContentSize();
   web.setBounds({ x: 0, y: BAR_HEIGHT, width, height: Math.max(0, height - BAR_HEIGHT) });
@@ -87,11 +115,17 @@ function ensureWeb(): WebContentsView {
     event.preventDefault();
     if (where === "browser") void shell.openExternal(url);
   });
-  contents.on("did-navigate", (_event, url) => void onWebNavigated(url));
+  contents.on("did-navigate", (_event, url) => {
+    sendWebNav();
+    void onWebNavigated(url);
+  });
+  contents.on("page-title-updated", sendWebNav);
   // The web app moves between pages without reloading (Next.js), and its
   // sign-out ends with one of those moves, so in-page navigations count too.
   contents.on("did-navigate-in-page", (_event, url, isMainFrame) => {
-    if (isMainFrame) void onWebNavigated(url);
+    if (!isMainFrame) return;
+    sendWebNav();
+    void onWebNavigated(url);
   });
   contents.on("did-fail-load", (_event, code, _description, _url, isMainFrame) => {
     // -3 is an aborted load (a redirect, a new navigation): not a network problem.
@@ -109,9 +143,16 @@ async function onWebNavigated(url: string) {
     claimRetried = false;
     return;
   }
-  if (meaning === "claim-failed" && !claimRetried) {
-    claimRetried = true;
-    await claimWeb();
+  if (meaning === "claim-failed" || meaning === "lapsed") {
+    if (!claimRetried) {
+      claimRetried = true;
+      await claimWeb();
+      return;
+    }
+    // Twice in a row: the server is having trouble (a deploy, say). That is
+    // no reason to sign the PC out. The next check (within 30 s) tries again,
+    // and signs out only if the server refuses the PC's own token.
+    if (state.phase === "signed-in") setState({ ...state, webShown: false });
     return;
   }
   // Signing out inside the web app signs this PC out: the desktop is the identity.
@@ -120,7 +161,7 @@ async function onWebNavigated(url: string) {
 
 /** Sign the web view in with a fresh one-minute code and show it. */
 async function claimWeb() {
-  const stored = loadSession();
+  const stored = loadSession(SERVER);
   if (!stored || state.phase !== "signed-in") return;
   const reply = await server.webSession(stored.token);
   if (reply.kind === "offline") return setConnection("offline");
@@ -146,15 +187,20 @@ async function login(identifier: string, password: string): Promise<LoginResult>
   if (described.kind !== "ok") return { ok: false, message: "Signed in, but the school's details didn't load. Please try again." };
 
   const lastContact = new Date().toISOString();
-  saveSession({ token, session: described.data, lastContact });
+  saveSession({ server: SERVER, token, session: described.data, lastContact });
   setState({ phase: "signed-in", connection: "online", session: described.data, lastContact, webShown: false });
+  void sync.run();
   await claimWeb();
   return { ok: true };
 }
 
 async function signOut(notice?: SignedOutNotice) {
-  const stored = loadSession();
+  const stored = loadSession(SERVER);
   clearSession();
+  // Deleted with its key, unless changes made here haven't reached the server yet (D4).
+  await sync.idle();
+  closeOffline({ forget: true });
+  setScreen(null);
   // Best effort: an offline PC still signs itself out; the token then lapses on its own.
   if (stored) void server.logout(stored.token);
   await electronSession.fromPartition(WEB_PARTITION).clearStorageData();
@@ -184,7 +230,7 @@ function check(): Promise<void> {
 }
 
 async function doCheck() {
-  const stored = loadSession();
+  const stored = loadSession(SERVER);
   if (!stored) {
     // Signed out: only reachability matters (for the sign-in screen's message).
     const probe = await server.session("");
@@ -200,6 +246,7 @@ async function doCheck() {
     const webShown = state.phase === "signed-in" ? state.webShown : false;
     setState({ phase: "signed-in", connection: "online", session: reply.data, lastContact, webShown });
     if (!webShown) await claimWeb();
+    void sync.run();
     return;
   }
   if (reply.kind === "refused" && reply.status === 401) {
@@ -218,6 +265,92 @@ async function doCheck() {
     lastContact: stored.lastContact,
     webShown: state.phase === "signed-in" ? state.webShown : false,
   });
+}
+
+/* ------------------------------------------------------------------ */
+/* Offline work: the copy on this PC and keeping it in sync            */
+/* ------------------------------------------------------------------ */
+
+const signedInSession = (): SessionInfo | null => (state.phase === "signed-in" ? state.session : null);
+
+const sync = createSync({
+  db: () => {
+    const session = signedInSession();
+    return session && !session.onlineOnly ? currentOffline() : null;
+  },
+  server,
+  token: () => loadSession(SERVER)?.token ?? null,
+  tables: () => signedInSession()?.syncTables ?? [],
+  changed: () => sendSyncStatus(),
+  unauthorized: () => void signOut("revoked"),
+  offline: () => setConnection("offline"),
+  online: () => {
+    // The sync reached the server; the regular check claims the web view if it isn't yet.
+    if (state.phase === "signed-in" && state.connection === "offline") void check();
+  },
+});
+
+function sendSyncStatus() {
+  win?.webContents.send("sync-status", sync.status());
+}
+
+function setScreen(next: NativeScreen | null) {
+  screen = next;
+  win?.webContents.send("screen", screen);
+  layoutWeb();
+}
+
+function sendWebNav() {
+  const contents = web?.webContents;
+  if (!contents || !win) return;
+  const nav: WebNav = {
+    canGoBack: contents.navigationHistory.canGoBack(),
+    canGoForward: contents.navigationHistory.canGoForward(),
+    title: contents.getTitle(),
+  };
+  win.webContents.send("web-nav", nav);
+}
+
+const permissionsOf = (session: SessionInfo) => ({
+  canView: session.permissions.includes("attendance.view") || session.permissions.includes("attendance.mark"),
+  canMark: session.permissions.includes("attendance.mark"),
+  canEdit: session.permissions.includes("attendance.edit"),
+});
+
+function attendanceSetup() {
+  const session = signedInSession();
+  const db = sync.status().available ? currentOffline() : null;
+  const today = localDay();
+  if (!session || !db) return { session: null, sections: [], statuses: [], today, canView: false, canMark: false, canEdit: false };
+  return db.attendanceSetup(permissionsOf(session), today);
+}
+
+function attendanceRegister(sectionId: unknown, date: unknown) {
+  const db = sync.status().available ? currentOffline() : null;
+  if (!db || typeof sectionId !== "string" || !isDay(date)) return { sectionId: String(sectionId), date: String(date), entries: [], waiting: false, issue: null };
+  return db.register(sectionId, date);
+}
+
+function saveRegister(input: unknown): SaveResult {
+  const session = signedInSession();
+  const db = sync.status().available ? currentOffline() : null;
+  if (!session || !db) return { ok: false, message: "unavailable" };
+  const { sectionId, date, entries } = (input ?? {}) as { sectionId?: unknown; date?: unknown; entries?: unknown };
+  if (typeof sectionId !== "string" || !isDay(date) || !Array.isArray(entries)) return { ok: false, message: "stale" };
+
+  const today = localDay();
+  const blocked = registerBlock(date, today, permissionsOf(session));
+  if (blocked) return { ok: false, message: blocked };
+
+  const marks = entries
+    .filter((e): e is { enrollmentId: string; statusId: string } => typeof e?.enrollmentId === "string" && typeof e?.statusId === "string")
+    .map((e) => ({ enrollmentId: e.enrollmentId, statusId: e.statusId }));
+  const saved = db.saveRegister({ sectionId, date, savedOn: today, entries: marks });
+  if (!saved.ok) return saved;
+  sendSyncStatus();
+  // One write path (D8): saved here first, sent at once when online.
+  void sync.run();
+  return { ok: true };
 }
 
 /* ------------------------------------------------------------------ */
@@ -244,6 +377,22 @@ autoUpdater.on("error", (error) => {
 /* Window and IPC                                                      */
 /* ------------------------------------------------------------------ */
 
+/** The bar's colours, in step with src/index.css, so Windows' drawn buttons match it. */
+function barColors() {
+  return nativeTheme.shouldUseDarkColors
+    ? { background: "#1f1f1e", symbols: "#d4d4d2" }
+    : { background: "#f4f4f2", symbols: "#3a3a38" };
+}
+
+function titleBarOverlay() {
+  const colors = barColors();
+  return { color: colors.background, symbolColor: colors.symbols, height: BAR_HEIGHT };
+}
+
+nativeTheme.on("updated", () => {
+  if (win && process.platform !== "darwin") win.setTitleBarOverlay(titleBarOverlay());
+});
+
 function createWindow() {
   win = new BrowserWindow({
     width: 1280,
@@ -253,8 +402,12 @@ function createWindow() {
     icon: path.join(PUBLIC, "icon.png"),
     title: "IlmWays",
     show: false,
-    titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
-    trafficLightPosition: { x: 14, y: 14 },
+    // The app's own bar is the title bar, as in Claude and UC Ultra: the
+    // window buttons sit in it (macOS on the left; Windows' drawn over its right end).
+    titleBarStyle: "hidden",
+    trafficLightPosition: { x: 14, y: Math.round((BAR_HEIGHT - 16) / 2) },
+    ...(process.platform === "darwin" ? {} : { titleBarOverlay: titleBarOverlay() }),
+    backgroundColor: barColors().background,
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       sandbox: true,
@@ -287,6 +440,41 @@ ipcMain.handle("update:get", () => updateState);
 ipcMain.on("update:install", () => autoUpdater.quitAndInstall());
 ipcMain.handle("app:version", () => app.getVersion());
 
+ipcMain.on("screen:set", (_event, next: unknown) => setScreen(next === "home" || next === "attendance" ? next : null));
+ipcMain.on("web:back", () => web?.webContents.navigationHistory.goBack());
+ipcMain.on("web:forward", () => web?.webContents.navigationHistory.goForward());
+ipcMain.on("web:reload", () => web?.webContents.reload());
+ipcMain.on("menu:account", (_event, at: unknown, labels: unknown) => {
+  const session = signedInSession();
+  if (!win || !session) return;
+  const point = (at ?? {}) as { x?: unknown; y?: unknown };
+  const words = (labels ?? {}) as { signOut?: unknown; waiting?: unknown; version?: unknown };
+  const text = (value: unknown) => (typeof value === "string" ? value.slice(0, 200) : "");
+  Menu.buildFromTemplate([
+    { label: session.user.name, enabled: false },
+    { label: session.user.loginId, enabled: false },
+    { type: "separator" },
+    ...(text(words.waiting) ? [{ label: text(words.waiting), enabled: false }, { type: "separator" as const }] : []),
+    { label: text(words.version) || `IlmWays ${app.getVersion()}`, enabled: false },
+    { label: text(words.signOut) || "Sign out", click: () => void signOut() },
+  ]).popup({ window: win, x: Math.round(Number(point.x) || 0), y: Math.round(Number(point.y) || 0) });
+});
+
+ipcMain.handle("sync:status", () => sync.status());
+ipcMain.handle("sync:now", () => sync.run());
+ipcMain.handle("sync:retry", (_event, opId: unknown) => {
+  if (typeof opId === "string") currentOffline()?.retryOp(opId);
+  sendSyncStatus();
+  return sync.run();
+});
+ipcMain.handle("sync:discard", (_event, opId: unknown) => {
+  if (typeof opId === "string") currentOffline()?.discardOp(opId);
+  sendSyncStatus();
+});
+ipcMain.handle("attendance:setup", () => attendanceSetup());
+ipcMain.handle("attendance:register", (_event, sectionId: unknown, date: unknown) => attendanceRegister(sectionId, date));
+ipcMain.handle("attendance:save", (_event, input: unknown) => saveRegister(input));
+
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
@@ -309,7 +497,7 @@ if (!app.requestSingleInstanceLock()) {
     createWindow();
 
     // Signed in before? Show it at once from what the PC remembers, then check.
-    const stored = loadSession();
+    const stored = loadSession(SERVER);
     if (stored && !contactExpired(stored.lastContact)) {
       setState({ phase: "signed-in", connection: "checking", session: stored.session, lastContact: stored.lastContact, webShown: false });
     }

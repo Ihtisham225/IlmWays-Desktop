@@ -38,6 +38,9 @@ describe("signInPageMeaning", () => {
     expect(signInPageMeaning("https://www.ilmways.com/login?desktop=expired", server)).toBe("claim-failed");
     expect(signInPageMeaning("https://www.ilmways.com/login", server)).toBe("signed-out");
   });
+  it("tells a lapsed web session, which is signed in again, from signing out", () => {
+    expect(signInPageMeaning("https://www.ilmways.com/login?next=%2Fattendance", server)).toBe("lapsed");
+  });
   it("ignores every other page", () => {
     expect(signInPageMeaning("https://www.ilmways.com/dashboard", server)).toBe("not-sign-in");
     expect(signInPageMeaning("https://evil.example/login", server)).toBe("not-sign-in");
