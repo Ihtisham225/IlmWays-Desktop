@@ -1,0 +1,43 @@
+@import "tailwindcss";
+
+/* The web app's brand tokens, so the window's own screens match it. */
+@theme {
+  --color-brand: hsl(239 62% 52%);
+  --color-brand-soft: hsl(239 62% 96%);
+  --color-ink: hsl(230 35% 12%);
+  --color-muted: hsl(228 12% 42%);
+  --color-line: hsl(228 22% 89%);
+  --font-sans: "Segoe UI", system-ui, -apple-system, sans-serif;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: var(--font-sans);
+  color: var(--color-ink);
+  background: white;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Urdu and Arabic: the faces Windows and macOS ship, with room for Nastaliq. */
+[lang="ur"] body,
+[lang="ur"] {
+  font-family: "Noto Nastaliq Urdu", "Jameel Noori Nastaleeq", "Urdu Typesupport", var(--font-sans);
+  line-height: 2;
+}
+[lang="ar"] {
+  font-family: "Noto Naskh Arabic", "Geeza Pro", "Segoe UI", sans-serif;
+}
+
+/* The bar is the window's title bar: drag it to move the window. */
+.drag {
+  -webkit-app-region: drag;
+}
+.no-drag {
+  -webkit-app-region: no-drag;
+}

@@ -1,0 +1,11 @@
+node_modules
+dist
+dist-electron
+release
+*.log
+.DS_Store
+# Never commit signing material or API keys; they live in GitHub's encrypted secrets.
+*.p12
+*.p8
+*.pfx
+.env*
