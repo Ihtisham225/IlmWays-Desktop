@@ -1,13 +1,40 @@
 @import "tailwindcss";
 
-/* The web app's brand tokens, so the window's own screens match it. */
+/*
+ * The web app's brand tokens, so the window's own screens match it, plus the
+ * title bar's: a quiet neutral strip like Claude's and UC Ultra's. They
+ * follow the system's light or dark setting. The bar's background is
+ * repeated in electron/main.ts (barColors) for Windows' window buttons.
+ */
 @theme {
   --color-brand: hsl(239 62% 52%);
   --color-brand-soft: hsl(239 62% 96%);
   --color-ink: hsl(230 35% 12%);
   --color-muted: hsl(228 12% 42%);
   --color-line: hsl(228 22% 89%);
+  --color-surface: #fafaf9;
+  --color-raised: #ffffff;
+  --color-bar: #f4f4f2;
+  --color-bar-line: #e4e4e0;
+  --color-bar-hover: rgb(0 0 0 / 0.06);
+  --color-bar-active: #ffffff;
   --font-sans: "Segoe UI", system-ui, -apple-system, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-brand: hsl(239 80% 72%);
+    --color-brand-soft: hsl(239 30% 22%);
+    --color-ink: #ececea;
+    --color-muted: #a3a39e;
+    --color-line: #3a3a37;
+    --color-surface: #262624;
+    --color-raised: #30302e;
+    --color-bar: #1f1f1e;
+    --color-bar-line: #333331;
+    --color-bar-hover: rgb(255 255 255 / 0.07);
+    --color-bar-active: #4a4a46;
+  }
 }
 
 html,
@@ -20,7 +47,8 @@ body,
 body {
   font-family: var(--font-sans);
   color: var(--color-ink);
-  background: white;
+  background: var(--color-surface);
+  color-scheme: light dark;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -34,7 +62,7 @@ body {
   font-family: "Noto Naskh Arabic", "Geeza Pro", "Segoe UI", sans-serif;
 }
 
-/* The bar is the window's title bar: drag it to move the window. */
+/* The bar is the window's title bar: drag it to move the window; its controls don't drag. */
 .drag {
   -webkit-app-region: drag;
 }

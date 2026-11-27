@@ -1,9 +1,9 @@
 # IlmWays Desktop
 
 The IlmWays school app for Windows and macOS. It shows the full IlmWays web
-app in its own window, and (in coming updates) keeps the work that can't
-wait — attendance, fee collection, registering students and marks entry —
-working when the internet drops, syncing when it comes back.
+app in its own window, and keeps the work that can't wait working when the
+internet drops, syncing when it comes back. Attendance works offline from
+v0.2.0; fee collection, registering students and marks entry follow.
 
 **Download:** the latest installers are on the
 [Releases page](https://github.com/Ihtisham225/IlmWays-Desktop/releases/latest).
@@ -30,13 +30,39 @@ The plan behind it is `docs/DESKTOP-PLAN.md` in the
 - **Signing out inside the web app signs the PC out.**
 - The platform (super) admin can sign in, online only.
 
+### Offline work
+
+- **An encrypted copy of the school on the PC.** One SQLite file per school
+  and user (SQLCipher-style encryption, `better-sqlite3-multiple-ciphers`),
+  with a random key kept by the keychain (`safeStorage`). It holds only the
+  tables the server lets that user keep: a teacher gets the register's view
+  of students (name, admission number, status), never addresses or phones.
+  The platform admin gets no file at all.
+- **One write path.** A save goes to the PC first, as a change in the outbox,
+  and is sent at once when online. Screens show the server's copy with the
+  waiting changes laid over it, so a download never overwrites them.
+- **Sync** sends waiting changes, then downloads what changed (deletions
+  first, then each table in pages, resumable). It runs after every save,
+  with each 30-second check, on focus and on reconnect.
+- **Changes the server refuses** stay on the PC under *Needs attention*,
+  with *Try again* and *Discard*.
+- **Signing out** deletes the copy and its key, unless changes haven't been
+  sent yet: those are kept until the same person signs in again.
+- **The register** is the web's daily register. Today's can be marked by
+  anyone who marks attendance; an earlier day needs the edit permission. A
+  register marked offline counts as marked on its own day when it arrives;
+  one sent on a later day messages no parents.
+
 ```
 electron/main.ts     window, web view, sign-in, connection checks, updates
 electron/server.ts   the server's /api/desktop/v1 calls
 electron/store.ts    the encrypted device token on disk
+electron/offline.ts  where the encrypted offline copy lives, and its key
+electron/localdb.ts  the offline copy: mirror, outbox, register queries (tested)
+electron/sync.ts     the sync engine: send, then download (tested)
 electron/preload.ts  the window's only bridge to the main process
 shared/              types and rules shared by both sides (with tests)
-src/                 the window's own screens: bar, sign-in, offline
+src/                 the window's own screens: title bar, sign-in, offline work, attendance
 ```
 
 ## Develop
@@ -45,7 +71,7 @@ src/                 the window's own screens: bar, sign-in, offline
 npm install
 npm run dev          # against https://www.ilmways.com
 npm run dev:local    # against an IlmWays server on http://localhost:3000
-npm test
+npm test             # runs under Electron's own Node, which the SQLite module needs
 npm run typecheck
 ```
 
