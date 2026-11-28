@@ -48,6 +48,19 @@ const api: DesktopApi = {
   attendanceRegister: (sectionId, date) => ipcRenderer.invoke("attendance:register", sectionId, date),
   saveRegister: (input) => ipcRenderer.invoke("attendance:save", input),
 
+  feeSetup: () => ipcRenderer.invoke("fees:setup"),
+  searchStudents: (query) => ipcRenderer.invoke("fees:search", query),
+  ledger: (studentId) => ipcRenderer.invoke("fees:ledger", studentId),
+  collect: (input) => ipcRenderer.invoke("fees:collect", input),
+  receipt: (key) => ipcRenderer.invoke("fees:receipt", key),
+  printHtml: (html, size) => ipcRenderer.invoke("print:html", html, size),
+
+  admitSetup: () => ipcRenderer.invoke("students:admitSetup"),
+  admit: (input) => ipcRenderer.invoke("students:admit", input),
+  studentProfile: (studentId) => ipcRenderer.invoke("students:profile", studentId),
+  editStudent: (studentId, details) => ipcRenderer.invoke("students:edit", studentId, details),
+  admissionLetter: (studentId) => ipcRenderer.invoke("students:letter", studentId),
+
   platform: process.platform,
   locale: navigator.language,
 };

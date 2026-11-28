@@ -28,13 +28,36 @@ export const LOCAL_TABLES = {
   academic_sessions: ["name", "startsOn", "endsOn", "isCurrent", "archivedAt"],
   classes: ["sessionId", "name", "nameUr", "levelOrder", "archivedAt"],
   sections: ["classId", "name", "archivedAt"],
-  students: ["admissionNo", "firstName", "lastName", "status"],
+  students: ["admissionNo", "firstName", "lastName", "status", "fatherName"],
   guardians: [],
   student_guardians: [],
   enrollments: ["studentId", "sessionId", "classId", "sectionId", "rollNo", "status", "enrolledOn"],
   attendance_statuses: ["code", "label", "labelUr", "effect"],
   attendance: ["enrollmentId", "attendanceDate", "period", "statusId"],
+  // Phase 4: fee collection.
+  money_accounts: ["name", "kind", "isDefault", "archived"],
+  fee_heads: ["name", "nameUr", "code", "archivedAt"],
+  fee_charges: ["enrollmentId", "feeHeadId", "periodLabel", "netAmount", "dueDate", "status"],
+  payments: ["studentId", "amount", "method", "accountId", "reference", "paidOn", "reversesId"],
+  payment_allocations: ["paymentId", "feeChargeId", "amount"],
+  receipts: ["paymentId", "receiptNo", "issuedAt", "isCancelled"],
 } as const satisfies Record<string, readonly string[]>;
+
+/** The tables as migration 1 made them; later migrations change them from there. */
+const V1_TABLES: Record<string, readonly string[]> = {
+  academic_sessions: LOCAL_TABLES.academic_sessions,
+  classes: LOCAL_TABLES.classes,
+  sections: LOCAL_TABLES.sections,
+  students: ["admissionNo", "firstName", "lastName", "status"],
+  guardians: [],
+  student_guardians: [],
+  enrollments: LOCAL_TABLES.enrollments,
+  attendance_statuses: LOCAL_TABLES.attendance_statuses,
+  attendance: LOCAL_TABLES.attendance,
+};
+
+const createTable = (table: string, keys: readonly string[]) =>
+  `create table ${table} (id text primary key, ${keys.map((k) => snake(k)).join(", ")}${keys.length ? ", " : ""}data text not null)`;
 
 export type LocalTable = keyof typeof LOCAL_TABLES;
 export const isLocalTable = (name: string): name is LocalTable => Object.hasOwn(LOCAL_TABLES, name);
@@ -42,7 +65,9 @@ export const isLocalTable = (name: string): name is LocalTable => Object.hasOwn(
 /** The tombstones' own place in sync_state. */
 export const TOMBSTONES = "__tombstones";
 
-const snake = (key: string) => key.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);
+function snake(key: string) {
+  return key.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);
+}
 const toSql = (value: unknown) => (typeof value === "boolean" ? (value ? 1 : 0) : value === undefined ? null : value);
 
 const MIGRATIONS: string[] = [
@@ -62,19 +87,45 @@ const MIGRATIONS: string[] = [
        message text
      )`,
     `create index outbox_register_idx on outbox(register_key)`,
-    ...Object.entries(LOCAL_TABLES).map(
-      ([table, keys]) =>
-        `create table ${table} (id text primary key, ${keys.map((k) => `${snake(k)}`).join(", ")}${keys.length ? ", " : ""}data text not null)`,
-    ),
+    ...Object.entries(V1_TABLES).map(([table, keys]) => createTable(table, keys)),
     `create index classes_session_idx on classes(session_id)`,
     `create index sections_class_idx on sections(class_id)`,
     `create index enrollments_section_idx on enrollments(section_id)`,
     // The server's own unique key: one mark per student per day per period.
     `create unique index attendance_natural_key on attendance(enrollment_id, attendance_date, ifnull(period, 0))`,
   ].join(";\n"),
+  // 2: Phase 4, fee collection.
+  [
+    `alter table students add column father_name`,
+    // Students were kept without the father's name; download them again with it.
+    `delete from sync_state where tbl = 'students'`,
+    ...(["money_accounts", "fee_heads", "fee_charges", "payments", "payment_allocations", "receipts"] as const).map((t) => createTable(t, LOCAL_TABLES[t])),
+    `create index fee_charges_enrollment_idx on fee_charges(enrollment_id)`,
+    `create index payments_student_idx on payments(student_id)`,
+    `create index payment_allocations_payment_idx on payment_allocations(payment_id)`,
+    `create index payment_allocations_charge_idx on payment_allocations(fee_charge_id)`,
+    `create index receipts_payment_idx on receipts(payment_id)`,
+    `create index students_name_idx on students(first_name)`,
+    // What a change needs on this PC only (a receipt to print), never sent.
+    `alter table outbox add column local text`,
+    // Numbers reserved on the server for this PC to hand out offline (D2, D9).
+    `create table number_blocks (id text primary key, kind text not null, prefix text not null, first integer not null, last integer not null, next integer not null)`,
+  ].join(";\n"),
 ];
 
 export type OutboxOp = { opId: string; action: string; payload: Row };
+
+/** What a payment collected here sends (the server's `payment.record`). */
+export type PaymentRecordPayload = {
+  studentId: string;
+  amount: number;
+  accountId: string | null;
+  reference: string | null;
+  paidOn: string;
+  /** From this PC's reserved block; null when it ran out and the server is to give one. */
+  receiptNo: string | null;
+};
+export type PaymentRecordResult = { paymentId: string; receiptId: string; receiptNo: string; allocated?: { chargeId: string; amount: number }[] };
 
 export class LocalDb {
   readonly db: Database.Database;
@@ -175,6 +226,10 @@ export class LocalDb {
     const id = row.id;
     if (typeof id !== "string") return;
     const keys: readonly string[] = LOCAL_TABLES[table];
+    if (table === "payment_allocations") {
+      // The server's own split of a payment this PC wrote in when it was accepted.
+      this.db.prepare(`delete from payment_allocations where payment_id = ? and id like 'local:%'`).run(toSql(row.paymentId));
+    }
     if (table === "attendance") {
       // The server's id for a mark the PC already holds under its own: one per natural key.
       this.db
@@ -188,6 +243,15 @@ export class LocalDb {
          on conflict(id) do update set ${columns.slice(1).map((c) => `${c} = excluded.${c}`).join(", ")}`,
       )
       .run(id, ...keys.map((k) => toSql(row[k])), JSON.stringify(row));
+  }
+
+  /**
+   * A row made on this PC (a student admitted here), written into the copy
+   * under the id the server will keep. Its `__local` names the change that
+   * carries it; the pull's row replaces it once the server has it.
+   */
+  writeLocal(table: LocalTable, row: Row) {
+    this.upsert(table, row);
   }
 
   /** Forget one table (the user may no longer keep it), so it downloads afresh if allowed again. */
@@ -230,11 +294,31 @@ export class LocalDb {
    * once, so the screen doesn't flick back until the next pull brings the
    * server's own rows.
    */
-  completeOp(op: OutboxOp) {
+  completeOp(op: OutboxOp, result?: unknown) {
     this.db.transaction(() => {
       this.db.prepare("delete from outbox where op_id = ?").run(op.opId);
       if (op.action === "attendance.mark") this.mirrorRegister(op.payload as AttendanceMarkPayload);
+      if (op.action === "payment.record" && result) this.mirrorPayment(op.opId, op.payload as PaymentRecordPayload, result as PaymentRecordResult);
+      if (op.action === "student.admit" && result) {
+        // The number the server gave, when this PC had none to give.
+        const { admissionNo } = result as { admissionNo?: string };
+        if (admissionNo) this.db.prepare("update students set admission_no = ?, data = json_set(data, '$.admissionNo', ?) where id = ?").run(admissionNo, admissionNo, (op.payload as { studentId: string }).studentId);
+      }
     })();
+  }
+
+  /** A payment the server accepted, written in until the pull brings the server's rows. */
+  private mirrorPayment(opId: string, payload: PaymentRecordPayload, result: PaymentRecordResult) {
+    if (typeof result.paymentId !== "string" || typeof result.receiptId !== "string") return;
+    // A receipt on screen was opened by its change's id; it still finds its payment.
+    this.setMeta(`sent:${opId}`, result.paymentId);
+    this.upsert("payments", { id: result.paymentId, studentId: payload.studentId, amount: payload.amount, accountId: payload.accountId, reference: payload.reference, paidOn: payload.paidOn, method: null, reversesId: null });
+    this.upsert("receipts", { id: result.receiptId, paymentId: result.paymentId, receiptNo: result.receiptNo, issuedAt: new Date().toISOString(), isCancelled: false });
+    for (const a of result.allocated ?? []) {
+      this.db
+        .prepare("insert into payment_allocations (id, payment_id, fee_charge_id, amount, data) values (?, ?, ?, ?, '{}')")
+        .run(`local:${randomUUID()}`, result.paymentId, a.chargeId, a.amount);
+    }
   }
 
   /** The server refused it: it stays, shown in Sync issues, until retried or discarded. */
@@ -247,14 +331,20 @@ export class LocalDb {
   }
 
   discardOp(opId: string) {
-    this.db.prepare("delete from outbox where op_id = ?").run(opId);
+    this.db.transaction(() => {
+      // A student admitted here and never accepted leaves the copy with the change that carried them.
+      for (const table of ["enrollments", "students"] as const) {
+        this.db.prepare(`delete from ${table} where json_extract(data, '$.__local') = ?`).run(opId);
+      }
+      this.db.prepare("delete from outbox where op_id = ?").run(opId);
+    })();
   }
 
   issues(): SyncIssue[] {
     const rows = this.db
-      .prepare("select op_id, title, message, created_at from outbox where status = 'issue' order by seq")
-      .all() as { op_id: string; title: string; message: string | null; created_at: string }[];
-    return rows.map((r) => ({ opId: r.op_id, title: r.title, message: r.message ?? "", createdAt: r.created_at }));
+      .prepare("select op_id, action, title, message, created_at from outbox where status = 'issue' order by seq")
+      .all() as { op_id: string; action: string; title: string; message: string | null; created_at: string }[];
+    return rows.map((r) => ({ opId: r.op_id, action: r.action, title: r.title, message: r.message ?? "", createdAt: r.created_at }));
   }
 
   /* ---------------------------------------------------------------- */

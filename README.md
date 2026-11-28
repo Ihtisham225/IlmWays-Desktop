@@ -2,8 +2,8 @@
 
 The IlmWays school app for Windows and macOS. It shows the full IlmWays web
 app in its own window, and keeps the work that can't wait working when the
-internet drops, syncing when it comes back. Attendance works offline from
-v0.2.0; fee collection, registering students and marks entry follow.
+internet drops, syncing when it comes back. Attendance (v0.2.0), fee
+collection and admissions (v0.3.0) work offline; marks entry follows.
 
 **Download:** the latest installers are on the
 [Releases page](https://github.com/Ihtisham225/IlmWays-Desktop/releases/latest).
@@ -48,6 +48,18 @@ The plan behind it is `docs/DESKTOP-PLAN.md` in the
   with *Try again* and *Discard*.
 - **Signing out** deletes the copy and its key, unless changes haven't been
   sent yet: those are kept until the same person signs in again.
+- **Fee collection** (from 0.3.0): find a student, see what is outstanding
+  (worked out as the web does, never stored), collect, and print the
+  receipt on A4 or an 80 mm roll. The PC keeps receipt numbers reserved on
+  the server, so a receipt printed offline carries its final number; with
+  none left it prints as provisional. The server allocates each payment
+  oldest-first when it arrives, so two PCs collecting offline never clash.
+- **Admissions and students** (from 0.3.0): the school's own admission
+  form, with the PC's reserved admission numbers in the school's format;
+  the server runs the web's own admission on the same fields and keeps the
+  ids made on the PC, so a student admitted offline is on registers and the
+  fee screen at once. Search, the record, editing details, and the
+  admission letter.
 - **The register** is the web's daily register. Today's can be marked by
   anyone who marks attendance; an earlier day needs the edit permission. A
   register marked offline counts as marked on its own day when it arrives;
@@ -62,7 +74,10 @@ electron/localdb.ts  the offline copy: mirror, outbox, register queries (tested)
 electron/sync.ts     the sync engine: send, then download (tested)
 electron/preload.ts  the window's only bridge to the main process
 shared/              types and rules shared by both sides (with tests)
-src/                 the window's own screens: title bar, sign-in, offline work, attendance
+electron/fees.ts     fee collection: ledger, collecting, receipt numbers, receipts (tested)
+electron/students.ts admissions and student records (tested)
+src/                 the window's own screens: title bar, sign-in, offline work,
+                     attendance, fees and receipts, students and admissions
 ```
 
 ## Develop

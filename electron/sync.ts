@@ -14,7 +14,7 @@ import type { Reply } from "./server";
 type Row = Record<string, unknown>;
 type PullPage = { rows: Row[]; cursor: unknown; serverTime: string };
 type TombstonePage = { deleted: { table: string; id: string }[]; cursor: unknown; serverTime: string; reset: boolean };
-type PushResult = { opId: string; status: "applied" | "duplicate" | "conflict" | "parent-missing" | "error"; message?: string };
+type PushResult = { opId: string; status: "applied" | "duplicate" | "conflict" | "parent-missing" | "error"; message?: string; result?: unknown };
 
 export type SyncServer = {
   pull(
@@ -38,6 +38,11 @@ export type SyncDeps = {
   offline(): void;
   /** The server could be reached (it answered, even with a refusal). */
   online(): void;
+  /**
+   * Between sending and downloading, while the server answers: keep what a
+   * workflow needs on hand (receipt numbers, the school's details).
+   */
+  between?(db: LocalDb, token: string): Promise<void>;
 };
 
 export const PAGE = 2000;
@@ -86,6 +91,11 @@ export function createSync(deps: SyncDeps) {
     }
 
     if (!(await push(db, token))) return false;
+    try {
+      await deps.between?.(db, token);
+    } catch (error) {
+      console.error("[sync] keeping numbers and school details", error);
+    }
     if (!(await pull(db, token))) return false;
     error = null;
     db.setMeta("lastSynced", new Date().toISOString());
@@ -121,7 +131,7 @@ export function createSync(deps: SyncDeps) {
         const op = byId.get(result.opId);
         if (!op) continue;
         sent.add(op.opId);
-        if (result.status === "applied" || result.status === "duplicate") db.completeOp(op);
+        if (result.status === "applied" || result.status === "duplicate") db.completeOp(op, result.result);
         else if (!(result.status === "error" && BUSY.test(result.message ?? ""))) {
           db.refuseOp(op.opId, result.message ?? "The server did not accept this change.");
         }
