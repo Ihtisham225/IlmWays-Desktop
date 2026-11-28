@@ -8,6 +8,7 @@ import {
   type Connection,
   type LoginResult,
   type NativeScreen,
+  type ReceiptSize,
   type SaveResult,
   type SessionInfo,
   type SignedOutNotice,
@@ -20,6 +21,8 @@ import { clearSession, loadSession, saveSession } from "./store";
 import { createServer } from "./server";
 import { closeOffline, currentOffline, offlineFor } from "./offline";
 import { createSync } from "./sync";
+import { addReceiptBlock, collect, feeSetup, ledger, receipt, receiptsLeft, saveSchool, searchStudents } from "./fees";
+import { RECEIPT_TOP_UP } from "../shared/fees";
 
 const { autoUpdater } = electronUpdater;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -288,6 +291,23 @@ const sync = createSync({
     // The sync reached the server; the regular check claims the web view if it isn't yet.
     if (state.phase === "signed-in" && state.connection === "offline") void check();
   },
+  between: async (db, token) => {
+    const session = signedInSession();
+    if (!session) return;
+    const fees = feePermissionsOf(session);
+    if (fees.canView && Date.now() - Number(db.getMeta("schoolFetched") ?? 0) > 60 * 60_000) {
+      const reply = await server.school(token);
+      if (reply.kind === "ok" && reply.data.school) {
+        saveSchool(db, reply.data.school);
+        db.setMeta("schoolFetched", String(Date.now()));
+      }
+    }
+    // Receipt numbers to hand out offline (D2): ask for more before they run out.
+    if (fees.canCollect && receiptsLeft(db) < RECEIPT_TOP_UP) {
+      const reply = await server.reserveNumbers(token, "receipt");
+      if (reply.kind === "ok") addReceiptBlock(db, reply.data.block);
+    }
+  },
 });
 
 function sendSyncStatus() {
@@ -309,6 +329,65 @@ function sendWebNav() {
     title: contents.getTitle(),
   };
   win.webContents.send("web-nav", nav);
+}
+
+const feePermissionsOf = (session: SessionInfo) => ({
+  canView: session.permissions.includes("fee.view") || session.permissions.includes("fee.collect"),
+  canCollect: session.permissions.includes("fee.collect"),
+});
+
+/** The offline copy, when the signed-in account keeps one. */
+const offlineDb = () => (sync.status().available ? currentOffline() : null);
+
+function collectFee(input: unknown) {
+  const session = signedInSession();
+  const db = offlineDb();
+  if (!session || !db || !feePermissionsOf(session).canCollect) return { ok: false as const, message: "unavailable" };
+  const raw = (input ?? {}) as Record<string, unknown>;
+  const str = (v: unknown) => (typeof v === "string" ? v : null);
+  const result = collect(
+    db,
+    {
+      studentId: str(raw.studentId) ?? "",
+      amount: typeof raw.amount === "number" ? raw.amount : NaN,
+      accountId: str(raw.accountId),
+      reference: str(raw.reference),
+      paidOn: str(raw.paidOn) ?? "",
+    },
+    localDay(),
+  );
+  if (!result.ok) return result;
+  sendSyncStatus();
+  // One write path (D8): saved here first, sent at once when online.
+  void sync.run();
+  return { ok: true as const, receiptKey: result.receiptKey };
+}
+
+/**
+ * Print a page the window drew, in a hidden window of its own: no scripts,
+ * no navigation, nothing but the page. A4, or an 80 mm thermal roll.
+ */
+async function printHtml(html: unknown, size: ReceiptSize): Promise<SaveResult> {
+  if (typeof html !== "string" || html.length > 5_000_000) return { ok: false, message: "unavailable" };
+  const page = new BrowserWindow({ show: false, webPreferences: { sandbox: true, contextIsolation: true, javascript: false } });
+  page.webContents.on("will-navigate", (event) => event.preventDefault());
+  page.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  try {
+    await page.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+    return await new Promise<SaveResult>((resolve) =>
+      page.webContents.print(
+        {
+          silent: false,
+          printBackground: true,
+          margins: { marginType: size === "thermal" ? "none" : "default" },
+          pageSize: size === "thermal" ? { width: 80_000, height: 297_000 } : "A4",
+        },
+        (ok, reason) => resolve(ok || reason === "cancelled" ? { ok: true } : { ok: false, message: reason }),
+      ),
+    );
+  } finally {
+    page.destroy();
+  }
 }
 
 const permissionsOf = (session: SessionInfo) => ({
@@ -440,7 +519,7 @@ ipcMain.handle("update:get", () => updateState);
 ipcMain.on("update:install", () => autoUpdater.quitAndInstall());
 ipcMain.handle("app:version", () => app.getVersion());
 
-ipcMain.on("screen:set", (_event, next: unknown) => setScreen(next === "home" || next === "attendance" ? next : null));
+ipcMain.on("screen:set", (_event, next: unknown) => setScreen(next === "home" || next === "attendance" || next === "fees" ? next : null));
 ipcMain.on("web:back", () => web?.webContents.navigationHistory.goBack());
 ipcMain.on("web:forward", () => web?.webContents.navigationHistory.goForward());
 ipcMain.on("web:reload", () => web?.webContents.reload());
@@ -474,6 +553,25 @@ ipcMain.handle("sync:discard", (_event, opId: unknown) => {
 ipcMain.handle("attendance:setup", () => attendanceSetup());
 ipcMain.handle("attendance:register", (_event, sectionId: unknown, date: unknown) => attendanceRegister(sectionId, date));
 ipcMain.handle("attendance:save", (_event, input: unknown) => saveRegister(input));
+ipcMain.handle("fees:setup", () => {
+  const session = signedInSession();
+  const db = offlineDb();
+  return session && db ? feeSetup(db, feePermissionsOf(session), localDay()) : null;
+});
+ipcMain.handle("fees:search", (_event, query: unknown) => {
+  const db = offlineDb();
+  return db && typeof query === "string" ? searchStudents(db, query.slice(0, 80)) : [];
+});
+ipcMain.handle("fees:ledger", (_event, studentId: unknown) => {
+  const db = offlineDb();
+  return db && typeof studentId === "string" ? ledger(db, studentId) : null;
+});
+ipcMain.handle("fees:collect", (_event, input: unknown) => collectFee(input));
+ipcMain.handle("fees:receipt", (_event, key: unknown) => {
+  const db = offlineDb();
+  return db && typeof key === "string" ? receipt(db, key) : null;
+});
+ipcMain.handle("print:html", (_event, html: unknown, size: unknown) => printHtml(html, size === "thermal" ? "thermal" : "a4"));
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();

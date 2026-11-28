@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { SyncStatus } from "../../shared/types";
 import { formatTime, type Locale, type T } from "../i18n";
-import { Alert, Arrow, ClipboardCheck, CloudOff, Spinner } from "../icons";
+import { Alert, Arrow, ClipboardCheck, CloudOff, Receipt, Spinner } from "../icons";
 import { SyncLine } from "./SyncLine";
 
 /**
@@ -14,6 +14,7 @@ export function Home({
   lastContact,
   sync,
   canAttendance,
+  canFees,
   locale,
   t,
 }: {
@@ -21,6 +22,7 @@ export function Home({
   lastContact: string;
   sync: SyncStatus;
   canAttendance: boolean;
+  canFees: boolean;
   locale: Locale;
   t: T;
 }) {
@@ -41,22 +43,15 @@ export function Home({
         {offline ? <p className="text-xs text-muted">{t("lastContact", { time: formatTime(lastContact, locale) })}</p> : null}
       </header>
 
-      {canAttendance ? (
-        <button
-          type="button"
-          onClick={() => window.ilmways.setScreen("attendance")}
-          disabled={!sync.firstSyncDone}
-          className="group flex w-full items-center gap-4 rounded-xl border border-line bg-raised p-4 text-start transition hover:border-brand/50 disabled:opacity-60"
-        >
-          <span className="flex size-10 items-center justify-center rounded-lg bg-brand-soft text-brand">
-            <ClipboardCheck className="size-5" />
-          </span>
-          <span className="flex-1">
-            <span className="block font-medium">{t("attendanceCard")}</span>
-            <span className="block text-sm text-muted">{t("attendanceCardBody")}</span>
-          </span>
-          <Arrow className="size-4 text-muted transition group-hover:text-brand rtl:rotate-180" />
-        </button>
+      {canAttendance || canFees ? (
+        <div className="grid gap-3 sm:grid-cols-2">
+          {canFees ? (
+            <WorkCard icon={<Receipt className="size-5" />} title={t("feesCard")} body={t("feesCardBody")} disabled={!sync.firstSyncDone} onOpen={() => window.ilmways.setScreen("fees")} />
+          ) : null}
+          {canAttendance ? (
+            <WorkCard icon={<ClipboardCheck className="size-5" />} title={t("attendanceCard")} body={t("attendanceCardBody")} disabled={!sync.firstSyncDone} onOpen={() => window.ilmways.setScreen("attendance")} />
+          ) : null}
+        </div>
       ) : (
         <p className="rounded-xl border border-line bg-raised p-4 text-sm text-muted">{t("noOfflineWork")}</p>
       )}
@@ -100,7 +95,9 @@ export function Home({
             {sync.issues.map((issue) => (
               <li key={issue.opId} className="flex flex-wrap items-center gap-3 py-2.5">
                 <div className="min-w-0 flex-1">
-                  <p className="text-sm font-medium">{t("attendanceTitle")} — {issue.title}</p>
+                  <p className="text-sm font-medium">
+                    {t(issue.action === "payment.record" ? "feeIssue" : "attendanceIssue")} — {issue.title}
+                  </p>
                   <p className="text-sm text-red-700 dark:text-red-400">{issue.message}</p>
                 </div>
                 <button
@@ -122,5 +119,23 @@ export function Home({
 
       <p className="text-xs text-muted">{t("comingSoon")}</p>
     </div>
+  );
+}
+
+function WorkCard({ icon, title, body, disabled, onOpen }: { icon: React.ReactNode; title: string; body: string; disabled: boolean; onOpen: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      disabled={disabled}
+      className="group flex w-full items-center gap-4 rounded-xl border border-line bg-raised p-4 text-start transition hover:border-brand/50 disabled:opacity-60"
+    >
+      <span className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-brand-soft text-brand">{icon}</span>
+      <span className="flex-1">
+        <span className="block font-medium">{title}</span>
+        <span className="block text-sm text-muted">{body}</span>
+      </span>
+      <Arrow className="size-4 text-muted transition group-hover:text-brand rtl:rotate-180" />
+    </button>
   );
 }

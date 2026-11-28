@@ -46,6 +46,8 @@ export type LoginResult = { ok: true } | { ok: false; message: string };
 /** A change that the server would not take, waiting for someone to look at it. */
 export type SyncIssue = {
   opId: string;
+  /** What kind of change: "attendance.mark", "payment.record", … */
+  action: string;
   /** What it was, in the app's words: "Attendance — Class 5 — A, 2026-11-27". */
   title: string;
   message: string;
@@ -105,8 +107,72 @@ export type Register = {
 
 export type SaveResult = { ok: true } | { ok: false; message: string };
 
+/* ------------------------------------------------------------------ */
+/* Fee collection (Phase 4)                                            */
+/* ------------------------------------------------------------------ */
+
+/** The school as a receipt prints it (GET /api/desktop/v1/school). */
+export type SchoolInfo = { name: string; nameUr: string | null; address: string | null; phone: string | null; logo: string | null; currency: string };
+
+export type FeeSetup = {
+  currency: string;
+  accounts: { id: string; name: string; isDefault: boolean }[];
+  today: string;
+  canCollect: boolean;
+  /** Receipt numbers this PC still holds; at 0 a receipt prints as provisional. */
+  receiptsLeft: number;
+};
+
+export type StudentHit = { studentId: string; name: string; admissionNo: string; fatherName: string | null; classLabel: string | null };
+
+export type LedgerCharge = {
+  id: string;
+  head: string;
+  period: string;
+  dueDate: string;
+  net: number;
+  /** Paid on the server, and collected here but not yet sent. */
+  paid: number;
+  waiting: number;
+  outstanding: number;
+};
+
+export type LedgerPayment = {
+  /** `payment:<id>` once on the server, `op:<opId>` while waiting here. */
+  key: string;
+  receiptNo: string | null;
+  amount: number;
+  paidOn: string;
+  state: "synced" | "waiting" | "issue";
+  cancelled: boolean;
+};
+
+export type Ledger = { student: StudentHit; charges: LedgerCharge[]; payments: LedgerPayment[]; outstanding: number; advance: number };
+
+export type CollectInput = { studentId: string; amount: number; accountId: string | null; reference: string | null; paidOn: string };
+export type CollectResult = { ok: true; receiptKey: string } | { ok: false; message: string };
+
+export type ReceiptView = {
+  school: SchoolInfo | null;
+  currency: string;
+  receiptNo: string | null;
+  paidOn: string;
+  student: StudentHit;
+  account: string | null;
+  reference: string | null;
+  lines: { head: string; period: string; amount: number }[];
+  total: number;
+  advance: number;
+  /** Still outstanding after this payment, on what this PC knows. */
+  balance: number;
+  waiting: boolean;
+  cancelled: boolean;
+};
+
+export type ReceiptSize = "a4" | "thermal";
+
 /** The window's own screens over the web app. */
-export type NativeScreen = "home" | "attendance";
+export type NativeScreen = "home" | "attendance" | "fees";
 
 export type DesktopApi = {
   getState(): Promise<AppState>;
@@ -139,6 +205,14 @@ export type DesktopApi = {
   attendanceSetup(): Promise<AttendanceSetup>;
   attendanceRegister(sectionId: string, date: string): Promise<Register>;
   saveRegister(input: { sectionId: string; date: string; entries: { enrollmentId: string; statusId: string }[] }): Promise<SaveResult>;
+
+  feeSetup(): Promise<FeeSetup | null>;
+  searchStudents(query: string): Promise<StudentHit[]>;
+  ledger(studentId: string): Promise<Ledger | null>;
+  collect(input: CollectInput): Promise<CollectResult>;
+  receipt(key: string): Promise<ReceiptView | null>;
+  /** Print a page the window drew (a receipt), in a window of its own with no scripts. */
+  printHtml(html: string, size: ReceiptSize): Promise<SaveResult>;
   platform: NodeJS.Platform;
   locale: string;
 };

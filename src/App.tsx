@@ -5,6 +5,7 @@ import { TopBar } from "./TopBar";
 import { SignIn } from "./screens/SignIn";
 import { Home } from "./screens/Home";
 import { Attendance } from "./screens/Attendance";
+import { Fees } from "./screens/Fees";
 import mark from "./lib/mark.svg";
 
 const NO_SYNC: SyncStatus = { available: false, running: false, firstSyncDone: false, downloaded: 0, waiting: 0, issues: [], lastSynced: null, error: null };
@@ -37,6 +38,7 @@ export function App({ locale }: { locale: Locale }) {
   const signedIn = state.phase === "signed-in";
   const offline = signedIn && state.connection === "offline";
   const canAttendance = signedIn && state.session.permissions.some((p) => p === "attendance.view" || p === "attendance.mark");
+  const canFees = signedIn && state.session.permissions.some((p) => p === "fee.view" || p === "fee.collect");
   // Offline, the offline work shows by itself; online, when chosen from the bar.
   const native: NativeScreen | null = signedIn && sync.available ? (screen ?? (offline ? "home" : null)) : null;
 
@@ -50,8 +52,10 @@ export function App({ locale }: { locale: Locale }) {
           <SignIn connection={state.connection} notice={state.notice} t={t} />
         ) : native === "attendance" && canAttendance && sync.firstSyncDone ? (
           <Attendance sync={sync} offline={offline} locale={locale} t={t} />
+        ) : native === "fees" && canFees && sync.firstSyncDone ? (
+          <Fees sync={sync} offline={offline} locale={locale} t={t} />
         ) : native ? (
-          <Home offline={offline} lastContact={state.lastContact} sync={sync} canAttendance={canAttendance} locale={locale} t={t} />
+          <Home offline={offline} lastContact={state.lastContact} sync={sync} canAttendance={canAttendance} canFees={canFees} locale={locale} t={t} />
         ) : offline ? (
           // Online only (the platform admin): nothing works without the internet.
           <OnlineOnlyOffline t={t} />
