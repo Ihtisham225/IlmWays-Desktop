@@ -245,6 +245,15 @@ export class LocalDb {
       .run(id, ...keys.map((k) => toSql(row[k])), JSON.stringify(row));
   }
 
+  /**
+   * A row made on this PC (a student admitted here), written into the copy
+   * under the id the server will keep. Its `__local` names the change that
+   * carries it; the pull's row replaces it once the server has it.
+   */
+  writeLocal(table: LocalTable, row: Row) {
+    this.upsert(table, row);
+  }
+
   /** Forget one table (the user may no longer keep it), so it downloads afresh if allowed again. */
   dropTable(table: LocalTable) {
     this.db.transaction(() => {
@@ -290,6 +299,11 @@ export class LocalDb {
       this.db.prepare("delete from outbox where op_id = ?").run(op.opId);
       if (op.action === "attendance.mark") this.mirrorRegister(op.payload as AttendanceMarkPayload);
       if (op.action === "payment.record" && result) this.mirrorPayment(op.opId, op.payload as PaymentRecordPayload, result as PaymentRecordResult);
+      if (op.action === "student.admit" && result) {
+        // The number the server gave, when this PC had none to give.
+        const { admissionNo } = result as { admissionNo?: string };
+        if (admissionNo) this.db.prepare("update students set admission_no = ?, data = json_set(data, '$.admissionNo', ?) where id = ?").run(admissionNo, admissionNo, (op.payload as { studentId: string }).studentId);
+      }
     })();
   }
 
@@ -317,7 +331,13 @@ export class LocalDb {
   }
 
   discardOp(opId: string) {
-    this.db.prepare("delete from outbox where op_id = ?").run(opId);
+    this.db.transaction(() => {
+      // A student admitted here and never accepted leaves the copy with the change that carried them.
+      for (const table of ["enrollments", "students"] as const) {
+        this.db.prepare(`delete from ${table} where json_extract(data, '$.__local') = ?`).run(opId);
+      }
+      this.db.prepare("delete from outbox where op_id = ?").run(opId);
+    })();
   }
 
   issues(): SyncIssue[] {

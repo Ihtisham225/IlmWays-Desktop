@@ -55,6 +55,12 @@ const api: DesktopApi = {
   receipt: (key) => ipcRenderer.invoke("fees:receipt", key),
   printHtml: (html, size) => ipcRenderer.invoke("print:html", html, size),
 
+  admitSetup: () => ipcRenderer.invoke("students:admitSetup"),
+  admit: (input) => ipcRenderer.invoke("students:admit", input),
+  studentProfile: (studentId) => ipcRenderer.invoke("students:profile", studentId),
+  editStudent: (studentId, details) => ipcRenderer.invoke("students:edit", studentId, details),
+  admissionLetter: (studentId) => ipcRenderer.invoke("students:letter", studentId),
+
   platform: process.platform,
   locale: navigator.language,
 };

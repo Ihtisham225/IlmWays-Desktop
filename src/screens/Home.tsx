@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { SyncStatus } from "../../shared/types";
 import { formatTime, type Locale, type T } from "../i18n";
-import { Alert, Arrow, ClipboardCheck, CloudOff, Receipt, Spinner } from "../icons";
+import { Alert, Arrow, ClipboardCheck, CloudOff, Receipt, Spinner, UserPlus, Users } from "../icons";
 import { SyncLine } from "./SyncLine";
 
 /**
@@ -9,12 +9,21 @@ import { SyncLine } from "./SyncLine";
  * Shown when the internet drops, and from the bar at any time. Phase 3 has
  * attendance; fees, registration and marks join it in later phases.
  */
+const ISSUE_LABEL: Record<string, "feeIssue" | "attendanceIssue" | "studentIssue" | "studentEditIssue"> = {
+  "payment.record": "feeIssue",
+  "attendance.mark": "attendanceIssue",
+  "student.admit": "studentIssue",
+  "student.update": "studentEditIssue",
+};
+
 export function Home({
   offline,
   lastContact,
   sync,
   canAttendance,
   canFees,
+  canStudents,
+  canAdmit,
   locale,
   t,
 }: {
@@ -23,6 +32,8 @@ export function Home({
   sync: SyncStatus;
   canAttendance: boolean;
   canFees: boolean;
+  canStudents: boolean;
+  canAdmit: boolean;
   locale: Locale;
   t: T;
 }) {
@@ -43,13 +54,19 @@ export function Home({
         {offline ? <p className="text-xs text-muted">{t("lastContact", { time: formatTime(lastContact, locale) })}</p> : null}
       </header>
 
-      {canAttendance || canFees ? (
+      {canAttendance || canFees || canStudents || canAdmit ? (
         <div className="grid gap-3 sm:grid-cols-2">
           {canFees ? (
             <WorkCard icon={<Receipt className="size-5" />} title={t("feesCard")} body={t("feesCardBody")} disabled={!sync.firstSyncDone} onOpen={() => window.ilmways.setScreen("fees")} />
           ) : null}
           {canAttendance ? (
             <WorkCard icon={<ClipboardCheck className="size-5" />} title={t("attendanceCard")} body={t("attendanceCardBody")} disabled={!sync.firstSyncDone} onOpen={() => window.ilmways.setScreen("attendance")} />
+          ) : null}
+          {canAdmit ? (
+            <WorkCard icon={<UserPlus className="size-5" />} title={t("admitCard")} body={t("admitCardBody")} disabled={!sync.firstSyncDone} onOpen={() => window.ilmways.setScreen("admit")} />
+          ) : null}
+          {canStudents ? (
+            <WorkCard icon={<Users className="size-5" />} title={t("studentsCard")} body={t("studentsCardBody")} disabled={!sync.firstSyncDone} onOpen={() => window.ilmways.setScreen("students")} />
           ) : null}
         </div>
       ) : (
@@ -96,7 +113,7 @@ export function Home({
               <li key={issue.opId} className="flex flex-wrap items-center gap-3 py-2.5">
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-medium">
-                    {t(issue.action === "payment.record" ? "feeIssue" : "attendanceIssue")} — {issue.title}
+                    {t(ISSUE_LABEL[issue.action] ?? "attendanceIssue")} — {issue.title}
                   </p>
                   <p className="text-sm text-red-700 dark:text-red-400">{issue.message}</p>
                 </div>

@@ -1,6 +1,6 @@
 import { app } from "electron";
 import os from "node:os";
-import type { SchoolInfo, SessionInfo } from "../shared/types";
+import type { AdmissionFormSettings, SchoolInfo, SessionInfo } from "../shared/types";
 import type { SyncServer } from "./sync";
 
 /**
@@ -59,9 +59,9 @@ export function createServer(base: string) {
     session: (token: string) => call<SessionInfo>("GET", "/api/desktop/v1/session", { token }),
     logout: (token: string) => call<{ signedOut: boolean }>("POST", "/api/desktop/v1/auth/logout", { token }),
     webSession: (token: string) => call<{ url: string }>("POST", "/api/desktop/v1/web-session", { token }),
-    reserveNumbers: (token: string, kind: "receipt") =>
-      call<{ block: { id: string; kind: string; prefix: string; first: number; last: number } }>("POST", "/api/desktop/v1/number-blocks", { token, body: { kind } }),
-    school: (token: string) => call<{ school: SchoolInfo }>("GET", "/api/desktop/v1/school", { token }),
+    reserveNumbers: (token: string, kind: "receipt" | "admission") =>
+      call<{ block: { id: string; kind: string; prefix: string; first: number; last: number } | null }>("POST", "/api/desktop/v1/number-blocks", { token, body: { kind } }),
+    school: (token: string) => call<{ school: SchoolInfo; admissionForm: AdmissionFormSettings | null }>("GET", "/api/desktop/v1/school", { token }),
     pull: ((token, body) => call("POST", "/api/desktop/v1/sync/pull", { token, body, timeout: SYNC_TIMEOUT_MS })) as SyncServer["pull"],
     push: ((token, ops) => call("POST", "/api/desktop/v1/sync/push", { token, body: { ops }, timeout: SYNC_TIMEOUT_MS })) as SyncServer["push"],
   };

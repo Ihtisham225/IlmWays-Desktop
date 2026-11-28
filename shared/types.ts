@@ -171,8 +171,100 @@ export type ReceiptView = {
 
 export type ReceiptSize = "a4" | "thermal";
 
+/* ------------------------------------------------------------------ */
+/* Registration and students (Phase 5)                                 */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The school's admission form, as the server keeps it (AdmissionFormSettings
+ * in src/lib/admission-form.ts, ilmways). Only what the form needs to draw.
+ */
+export type FieldType = "text" | "textarea" | "number" | "date" | "select" | "radio" | "checkbox" | "phone" | "email" | "cnic" | "table";
+export type FormSection = "program" | "student" | "family" | "contact" | "previous" | "academic" | "other" | "office";
+export type AdmissionField = {
+  id: string;
+  label: string;
+  type: FieldType;
+  section: FormSection;
+  required: boolean;
+  enabled: boolean;
+  options: string[];
+  columns: string[];
+  rows: string[];
+  classes: string[];
+  hint: string;
+};
+export type CoreKey =
+  | "lastName" | "bForm" | "fatherName" | "dob" | "gender" | "phone" | "email" | "address"
+  | "guardianCnic" | "guardianPhone" | "guardianEmail" | "rollNo" | "monthlyFee";
+export type CoreSetting = { enabled: boolean; required: boolean; label?: string };
+export type AdmissionFormSettings = {
+  core: Record<CoreKey, CoreSetting>;
+  fields: AdmissionField[];
+  documents: { id: string; label: string; required: boolean; enabled: boolean }[];
+};
+
+export type AdmitClass = { id: string; name: string; sections: { id: string; name: string }[] };
+
+export type AdmitSetup = {
+  form: AdmissionFormSettings | null;
+  classes: AdmitClass[];
+  session: { id: string; name: string } | null;
+  today: string;
+  /** The next number this PC would give, from its reserved block; "" when it holds none. */
+  nextAdmissionNo: string;
+  admissionNosLeft: number;
+};
+
+/** The admission form's fields under the web form's own input names. */
+export type AdmitInput = { fields: Record<string, string> };
+export type AdmitResult = { ok: true; studentId: string } | { ok: false; message: string; field?: string };
+
+/** The student's own details, as the web's edit form has them. */
+export type StudentDetails = {
+  admissionNo: string;
+  firstName: string;
+  lastName: string;
+  fatherName: string;
+  dob: string;
+  gender: string;
+  bForm: string;
+  phone: string;
+  email: string;
+  address: string;
+  admittedOn: string;
+};
+
+export type StudentProfile = {
+  studentId: string;
+  details: StudentDetails;
+  status: string;
+  classLabel: string | null;
+  sessionName: string | null;
+  guardians: { name: string; relation: string | null; phone: string | null }[];
+  /** Answers to the school's own fields, label and value. */
+  answers: { label: string; value: string }[];
+  /** Saved here and not yet on the server: admitted, or edited. */
+  waiting: boolean;
+  issue: string | null;
+  /** Admitted on this PC and not yet on the server. */
+  admittedHere: boolean;
+};
+
+export type AdmissionLetterView = {
+  school: SchoolInfo | null;
+  name: string;
+  fatherName: string | null;
+  admissionNo: string;
+  admittedOn: string;
+  className: string | null;
+  sessionName: string | null;
+  guardian: string | null;
+  documents: { label: string; received: boolean }[];
+};
+
 /** The window's own screens over the web app. */
-export type NativeScreen = "home" | "attendance" | "fees";
+export type NativeScreen = "home" | "attendance" | "fees" | "students" | "admit";
 
 export type DesktopApi = {
   getState(): Promise<AppState>;
@@ -211,6 +303,12 @@ export type DesktopApi = {
   ledger(studentId: string): Promise<Ledger | null>;
   collect(input: CollectInput): Promise<CollectResult>;
   receipt(key: string): Promise<ReceiptView | null>;
+  admitSetup(): Promise<AdmitSetup | null>;
+  admit(input: AdmitInput): Promise<AdmitResult>;
+  studentProfile(studentId: string): Promise<StudentProfile | null>;
+  editStudent(studentId: string, details: StudentDetails): Promise<SaveResult>;
+  admissionLetter(studentId: string): Promise<AdmissionLetterView | null>;
+
   /** Print a page the window drew (a receipt), in a window of its own with no scripts. */
   printHtml(html: string, size: ReceiptSize): Promise<SaveResult>;
   platform: NodeJS.Platform;

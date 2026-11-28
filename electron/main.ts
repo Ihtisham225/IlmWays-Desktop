@@ -11,6 +11,7 @@ import {
   type ReceiptSize,
   type SaveResult,
   type SessionInfo,
+  type StudentDetails,
   type SignedOutNotice,
   type UpdateState,
   type WebNav,
@@ -23,6 +24,7 @@ import { closeOffline, currentOffline, offlineFor } from "./offline";
 import { createSync } from "./sync";
 import { addReceiptBlock, collect, feeSetup, ledger, receipt, receiptsLeft, saveSchool, searchStudents } from "./fees";
 import { RECEIPT_TOP_UP } from "../shared/fees";
+import { addAdmissionBlock, admissionLetter, admissionNosLeft, admit, admitSetup, editStudent, profile, saveAdmissionForm } from "./students";
 
 const { autoUpdater } = electronUpdater;
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -295,17 +297,25 @@ const sync = createSync({
     const session = signedInSession();
     if (!session) return;
     const fees = feePermissionsOf(session);
-    if (fees.canView && Date.now() - Number(db.getMeta("schoolFetched") ?? 0) > 60 * 60_000) {
+    const people = studentPermissionsOf(session);
+    if ((fees.canView || people.canView) && Date.now() - Number(db.getMeta("schoolFetched") ?? 0) > 60 * 60_000) {
       const reply = await server.school(token);
       if (reply.kind === "ok" && reply.data.school) {
         saveSchool(db, reply.data.school);
+        saveAdmissionForm(db, reply.data.admissionForm ?? null);
         db.setMeta("schoolFetched", String(Date.now()));
       }
     }
     // Receipt numbers to hand out offline (D2): ask for more before they run out.
     if (fees.canCollect && receiptsLeft(db) < RECEIPT_TOP_UP) {
       const reply = await server.reserveNumbers(token, "receipt");
-      if (reply.kind === "ok") addReceiptBlock(db, reply.data.block);
+      if (reply.kind === "ok" && reply.data.block) addReceiptBlock(db, reply.data.block);
+    }
+    // Admission numbers in the school's format (D9). None to count from yet: the number is typed, as on the web.
+    if (people.canAdmit && admissionNosLeft(db) < 3 && Date.now() - Number(db.getMeta("admissionAsked") ?? 0) > 10 * 60_000) {
+      const reply = await server.reserveNumbers(token, "admission");
+      if (reply.kind === "ok" && reply.data.block) addAdmissionBlock(db, reply.data.block);
+      else if (reply.kind === "ok") db.setMeta("admissionAsked", String(Date.now()));
     }
   },
 });
@@ -329,6 +339,21 @@ function sendWebNav() {
     title: contents.getTitle(),
   };
   win.webContents.send("web-nav", nav);
+}
+
+const studentPermissionsOf = (session: SessionInfo) => ({
+  canView: session.permissions.includes("student.view"),
+  canAdmit: session.permissions.includes("student.create"),
+  canEdit: session.permissions.includes("student.edit"),
+});
+
+/** A change saved here: tell the window, and send it at once when online (D8). */
+function saved<T extends { ok: boolean }>(result: T): T {
+  if (result.ok) {
+    sendSyncStatus();
+    void sync.run();
+  }
+  return result;
 }
 
 const feePermissionsOf = (session: SessionInfo) => ({
@@ -519,7 +544,8 @@ ipcMain.handle("update:get", () => updateState);
 ipcMain.on("update:install", () => autoUpdater.quitAndInstall());
 ipcMain.handle("app:version", () => app.getVersion());
 
-ipcMain.on("screen:set", (_event, next: unknown) => setScreen(next === "home" || next === "attendance" || next === "fees" ? next : null));
+const SCREENS = new Set<NativeScreen>(["home", "attendance", "fees", "students", "admit"]);
+ipcMain.on("screen:set", (_event, next: unknown) => setScreen(SCREENS.has(next as NativeScreen) ? (next as NativeScreen) : null));
 ipcMain.on("web:back", () => web?.webContents.navigationHistory.goBack());
 ipcMain.on("web:forward", () => web?.webContents.navigationHistory.goForward());
 ipcMain.on("web:reload", () => web?.webContents.reload());
@@ -570,6 +596,37 @@ ipcMain.handle("fees:collect", (_event, input: unknown) => collectFee(input));
 ipcMain.handle("fees:receipt", (_event, key: unknown) => {
   const db = offlineDb();
   return db && typeof key === "string" ? receipt(db, key) : null;
+});
+ipcMain.handle("students:admitSetup", () => {
+  const session = signedInSession();
+  const db = offlineDb();
+  return session && db && studentPermissionsOf(session).canAdmit ? admitSetup(db, localDay()) : null;
+});
+ipcMain.handle("students:admit", (_event, input: unknown) => {
+  const session = signedInSession();
+  const db = offlineDb();
+  if (!session || !db || !studentPermissionsOf(session).canAdmit) return { ok: false, message: "unavailable" };
+  const fields = (input as { fields?: unknown } | null)?.fields;
+  if (!fields || typeof fields !== "object") return { ok: false, message: "stale" };
+  const { opId: _op, ...result } = admit(db, { fields: fields as Record<string, string> }, localDay());
+  void _op;
+  return saved(result);
+});
+ipcMain.handle("students:profile", (_event, studentId: unknown) => {
+  const db = offlineDb();
+  return db && typeof studentId === "string" ? profile(db, studentId) : null;
+});
+ipcMain.handle("students:edit", (_event, studentId: unknown, details: unknown) => {
+  const session = signedInSession();
+  const db = offlineDb();
+  if (!session || !db || !studentPermissionsOf(session).canEdit || typeof studentId !== "string" || !details || typeof details !== "object") {
+    return { ok: false, message: "unavailable" };
+  }
+  return saved(editStudent(db, studentId, details as StudentDetails));
+});
+ipcMain.handle("students:letter", (_event, studentId: unknown) => {
+  const db = offlineDb();
+  return db && typeof studentId === "string" ? admissionLetter(db, studentId) : null;
 });
 ipcMain.handle("print:html", (_event, html: unknown, size: unknown) => printHtml(html, size === "thermal" ? "thermal" : "a4"));
 
