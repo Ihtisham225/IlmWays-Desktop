@@ -2,8 +2,8 @@
 
 The IlmWays school app for Windows and macOS. It shows the full IlmWays web
 app in its own window, and keeps the work that can't wait working when the
-internet drops, syncing when it comes back. Attendance works offline from
-v0.2.0; fee collection, registering students and marks entry follow.
+internet drops, syncing when it comes back. Attendance (v0.2.0), fee
+collection and admissions (v0.3.0) work offline; marks entry follows.
 
 **Download:** the latest installers are on the
 [Releases page](https://github.com/Ihtisham225/IlmWays-Desktop/releases/latest).
